@@ -1,107 +1,165 @@
-import axios from 'axios';
+import { dbService, supabase } from '../utils/supabase';
 
-// API base URL - should be configured via environment variable
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://vscode-internal-15654-beta.beta01.cloud.kavia.ai:3001';
-
-// Create axios instance with default config
-const api = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
-
-// Request interceptor to add auth token
-api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
+// Helper function to handle auth errors
+const handleAuthError = (error) => {
+  if (error.message?.includes('JWT') || error.message?.includes('auth')) {
+    // Redirect to login on auth errors
+    window.location.href = '/login';
   }
-);
+  throw error;
+};
 
-// Response interceptor to handle auth errors
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      window.location.href = '/login';
-    }
-    return Promise.reject(error);
-  }
-);
+// Helper function to format task data
+const formatTaskData = (task) => {
+  return {
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    priority: task.priority,
+    status: task.status,
+    due_date: task.due_date,
+    user_id: task.user_id,
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    completed_at: task.completed_at,
+  };
+};
 
 // PUBLIC_INTERFACE
 export const authService = {
-  async login(email, password) {
-    const response = await api.post('/auth/login', { email, password });
-    return response.data;
+  async getCurrentUser() {
+    try {
+      const { data: { user }, error } = await supabase.auth.getUser();
+      if (error) throw error;
+      return user;
+    } catch (error) {
+      console.error('Get current user error:', error);
+      throw error;
+    }
   },
 
-  async register(email, password, full_name) {
-    const response = await api.post('/auth/register', { 
-      email, 
-      password, 
-      full_name 
-    });
-    return response.data;
-  },
-
-  async getCurrentUser(token) {
-    const response = await api.get('/auth/me', {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    return response.data;
+  async getSession() {
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (error) throw error;
+      return session;
+    } catch (error) {
+      console.error('Get session error:', error);
+      throw error;
+    }
   }
 };
 
 // PUBLIC_INTERFACE
 export const taskService = {
   async getTasks(filters = {}) {
-    const params = new URLSearchParams();
-    
-    if (filters.status) params.append('status', filters.status);
-    if (filters.priority) params.append('priority', filters.priority);
-    if (filters.search) params.append('search', filters.search);
-    if (filters.due_date_from) params.append('due_date_from', filters.due_date_from);
-    if (filters.due_date_to) params.append('due_date_to', filters.due_date_to);
-    if (filters.page) params.append('page', filters.page);
-    if (filters.per_page) params.append('per_page', filters.per_page);
-    
-    const response = await api.get(`/tasks/?${params.toString()}`);
-    return response.data;
+    try {
+      const result = await dbService.getTasks(filters);
+      
+      if (result.error) {
+        handleAuthError(result.error);
+      }
+
+      return {
+        tasks: result.data.map(formatTaskData),
+        total: result.total,
+        page: result.page,
+        per_page: result.per_page,
+      };
+    } catch (error) {
+      console.error('Get tasks error:', error);
+      handleAuthError(error);
+    }
   },
 
   async getTask(taskId) {
-    const response = await api.get(`/tasks/${taskId}`);
-    return response.data;
+    try {
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('id', taskId)
+        .single();
+
+      if (error) {
+        handleAuthError(error);
+      }
+
+      return formatTaskData(data);
+    } catch (error) {
+      console.error('Get task error:', error);
+      handleAuthError(error);
+    }
   },
 
   async createTask(taskData) {
-    const response = await api.post('/tasks/', taskData);
-    return response.data;
+    try {
+      // Get current user
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        throw new Error('User not authenticated');
+      }
+
+      const result = await dbService.createTask({
+        ...taskData,
+        user_id: user.id,
+      });
+
+      if (result.error) {
+        handleAuthError(result.error);
+      }
+
+      return formatTaskData(result.data);
+    } catch (error) {
+      console.error('Create task error:', error);
+      handleAuthError(error);
+    }
   },
 
   async updateTask(taskId, taskData) {
-    const response = await api.put(`/tasks/${taskId}`, taskData);
-    return response.data;
+    try {
+      const result = await dbService.updateTask(taskId, taskData);
+
+      if (result.error) {
+        handleAuthError(result.error);
+      }
+
+      return formatTaskData(result.data);
+    } catch (error) {
+      console.error('Update task error:', error);
+      handleAuthError(error);
+    }
   },
 
   async deleteTask(taskId) {
-    const response = await api.delete(`/tasks/${taskId}`);
-    return response.data;
+    try {
+      const result = await dbService.deleteTask(taskId);
+
+      if (result.error) {
+        handleAuthError(result.error);
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error('Delete task error:', error);
+      handleAuthError(error);
+    }
   },
 
   async markComplete(taskId) {
-    const response = await api.patch(`/tasks/${taskId}/complete`);
-    return response.data;
+    try {
+      const result = await dbService.markTaskComplete(taskId);
+
+      if (result.error) {
+        handleAuthError(result.error);
+      }
+
+      return formatTaskData(result.data);
+    } catch (error) {
+      console.error('Mark complete error:', error);
+      handleAuthError(error);
+    }
   }
 };
 
-export default api;
+// For backward compatibility, also export the supabase client
+export default supabase;
